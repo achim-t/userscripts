@@ -8,6 +8,7 @@
 // @noframes
 // @grant          none
 //
+// @author         achim-t
 // @license        MIT License
 // ==/UserScript==
 'use strict';
@@ -15,11 +16,11 @@
 // ─── Selectors (kept in sync with wOxxOm's original script) ──────────────────
 
 const ENTRY = [
-  'ytd-rich-item-renderer',                        // Startseite
-  'ytd-compact-video-renderer',                    // Seitenleiste beim Schauen
-  '#related yt-lockup-view-model',                 // Seitenleiste (neues Layout)
-  'ytd-video-renderer',                            // Suche / Verlauf
-  '[page-subtype="history"] yt-lockup-view-model', // Verlauf (neues Layout)
+  'ytd-rich-item-renderer',                        // Home feed
+  'ytd-compact-video-renderer',                    // Watch page sidebar
+  '#related yt-lockup-view-model',                 // Sidebar (new layout)
+  'ytd-video-renderer',                            // Search / history
+  '[page-subtype="history"] yt-lockup-view-model', // History (new layout)
 ].join(',');
 
 const MENU_BTN = [
@@ -30,11 +31,11 @@ const MENU_BTN = [
   '.shortsLockupViewModelHostOutsideMetadataMenu button',
 ].join(',');
 
-// Icon-Bezeichner für „Kein Interesse" in beiden Menu-Formaten
+// Icon identifiers for "Not interested" in both menu formats
 const NI_ICON_OLD = 'NOT_INTERESTED';   // data.icon.iconType
-const NI_ICON_NEW = 'not_interested';   // clientResource.imageName (Teilstring)
+const NI_ICON_NEW = 'not_interested';   // clientResource.imageName (substring match)
 
-// Fallback: Textmuster für verschiedene YouTube-Sprachen
+// Fallback: text patterns for various YouTube UI languages
 const NI_TEXT_PATTERNS = [
   'not interested',
   'kein interesse',
@@ -47,7 +48,19 @@ const NI_TEXT_PATTERNS = [
   '興味なし',
 ];
 
-// ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const CONFIG = {
+  DELAY_BETWEEN: 350,   // ms between entries (rate-limiting against YT throttling)
+  DELAY_RENDER:  120,   // ms wait for menu to render
+  DELAY_CLICK:    80,   // ms after clicking menu item
+  DELAY_CLEANUP:  60,   // ms before removing CSS rule
+  BTN_TOP:      '12px', // centers 32px button in 56px masthead
+  BTN_LEFT:    '200px', // after hamburger (~40px) + logo (~120px) + gap
+  RESULT_SHOW:  4000,   // ms to show the result label
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const $ = (sel, base = document) => base.querySelector(sel);
 const $$ = (sel, base = document) => [...base.querySelectorAll(sel)];
@@ -94,22 +107,25 @@ async function waitFor(sel, base = document) {
   });
 }
 
-// ─── Menü-Erkennung ───────────────────────────────────────────────────────────
+// ─── Menu detection ───────────────────────────────────────────────────────────
 
 function isNotInterestedItem(el) {
-  // Altes Format: data.icon.iconType === 'NOT_INTERESTED'
+  // Old format: data.icon.iconType === 'NOT_INTERESTED'
   if (getProp(el, 'data.icon.iconType') === NI_ICON_OLD) return true;
-  // Neues Format: clientResource.imageName enthält 'not_interested'
+  // New format: clientResource.imageName contains 'not_interested'
   const imgName = getProp(el, 'props.data.leadingImage.sources.0.clientResource.imageName') || '';
   if (imgName.toLowerCase().includes(NI_ICON_NEW)) return true;
-  // Textfallback (sprachunabhängig)
+  // Text fallback (language-agnostic)
   const text = (el.innerText || '').toLowerCase();
   return NI_TEXT_PATTERNS.some(p => text.includes(p));
 }
 
-// ─── Kern-Logik: einen Eintrag dismissieren ───────────────────────────────────
+// ─── Core logic: dismiss a single entry ──────────────────────────────────────
 
-let _sheet; // gemeinsames CSSStyleSheet für opacity-Hack
+let _sheet; // shared CSSStyleSheet for the opacity trick
+
+const closeMenu = () =>
+  document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
 
 function ensureSheet() {
   if (_sheet) return _sheet;
@@ -120,6 +136,8 @@ function ensureSheet() {
 }
 
 async function dismissEntry(entry) {
+  if (entry.hasAttribute('data-ni-done')) return false;
+
   const menuBtn = $(MENU_BTN, entry);
   if (!menuBtn) return false;
 
@@ -132,7 +150,7 @@ async function dismissEntry(entry) {
     menuBtn.dispatchEvent(new MouseEvent('click', {bubbles: true}));
     await raf();
 
-    // Popup finden, das zu diesem Eintrag gehört
+    // Find the popup that belongs to this entry
     let menu;
     const container = await waitFor('ytd-popup-container');
     if (container) {
@@ -146,8 +164,8 @@ async function dismissEntry(entry) {
     }
     if (!menu) return false;
 
-    // Auf Menu-Rendering warten
-    await delay(120);
+    // Wait for menu to render
+    await delay(CONFIG.DELAY_RENDER);
 
     const itemContainer =
       $('#items', menu) ||
@@ -157,34 +175,38 @@ async function dismissEntry(entry) {
     for (const item of itemContainer.children) {
       if (isNotInterestedItem(item)) {
         item.click();
-        await delay(80);
-        document.body.click();   // Menü schließen
+        await delay(CONFIG.DELAY_CLICK);
+        closeMenu();
+        entry.dataset.niDone = '1';
         return true;
       }
     }
 
-    document.body.click();
+    closeMenu();
     return false;
   } finally {
-    await delay(60);
+    await delay(CONFIG.DELAY_CLEANUP);
     try { sheet.deleteRule(ruleIdx); } catch (_) {}
   }
 }
 
-// ─── Bulk-Dismiss ─────────────────────────────────────────────────────────────
+// ─── Bulk dismiss ─────────────────────────────────────────────────────────────
 
 let running = false;
 
 async function dismissAll(viewportOnly) {
   if (running) {
-    // zweiter Klick → Stop
+    // second click → stop
     running = false;
     return;
   }
   running = true;
 
-  const entries = $$(ENTRY).filter(e => !viewportOnly || isInViewport(e));
+  const entries = $$(ENTRY)
+    .filter(e => !e.hasAttribute('data-ni-done'))
+    .filter(e => !viewportOnly || isInViewport(e));
   let dismissed = 0;
+  let failed = 0;
   const total = entries.length;
 
   setBtn({label: `⏳ 0 / ${total}`, active: true});
@@ -194,28 +216,30 @@ async function dismissAll(viewportOnly) {
     setBtn({label: `⏳ ${i + 1} / ${total}`, active: true});
     const ok = await dismissEntry(entries[i]);
     if (ok) {
-        dismissed++;
-        await delay(350); // Tempo drosseln, damit YT nicht streikt
+      dismissed++;
+      await delay(CONFIG.DELAY_BETWEEN); // throttle to avoid YT rate-limiting
+    } else {
+      failed++;
     }
   }
 
   running = false;
   setBtn({
-    label: `✓ ${dismissed} ausgeblendet`,
+    label: `✓ ${dismissed} dismissed${failed ? `  (${failed} failed)` : ''}`,
     active: false,
     temporary: true,
   });
 }
 
-// ─── Floating Button ──────────────────────────────────────────────────────────
+// ─── Floating button ──────────────────────────────────────────────────────────
 
 let btnEl;
 
 function setBtn({label, active, temporary = false}) {
   if (!btnEl) return;
   btnEl.title = active
-    ? 'Klicken zum Stoppen'
-    : 'Klick: Viewport  •  Shift+Klick: ganze Seite';
+    ? 'Click to stop'
+    : 'Click: viewport  •  Shift+click: entire page';
   if (active) {
     // flatten to plain text pill while running
     btnEl.textContent = label;
@@ -237,7 +261,7 @@ function setBtn({label, active, temporary = false}) {
         });
         rebuildIdleSpans();
       }
-    }, 4000);
+    }, CONFIG.RESULT_SHOW);
   }
 }
 
@@ -248,7 +272,7 @@ function rebuildIdleSpans() {
   btnEl.innerHTML = '';
 
   lblSpan = document.createElement('span');
-  lblSpan.textContent = '\u00A0Alle ausblenden'; // space after icon
+  lblSpan.textContent = '\u00A0Hide all'; // non-breaking space before label
   Object.assign(lblSpan.style, {
     display:    'inline-block',
     maxWidth:   '0',
@@ -275,12 +299,12 @@ function createButton() {
   if (btnEl) return;
 
   btnEl = document.createElement('button');
-  btnEl.title = 'Klick: Viewport  •  Shift+Klick: ganze Seite';
+  btnEl.title = 'Click: viewport  •  Shift+click: entire page';
 
   Object.assign(btnEl.style, {
     position:      'fixed',
-    top:           '12px',  // centers 32px in 56px masthead
-    left:          '200px', // after hamburger (~40px) + logo (~120px) + gap
+    top:           CONFIG.BTN_TOP,
+    left:          CONFIG.BTN_LEFT,
     zIndex:        '99999',
     background:    'transparent',
     color:         'rgba(255,255,255,0.3)',
@@ -339,7 +363,7 @@ function createButton() {
   document.body.appendChild(btnEl);
 }
 
-// ─── Init + SPA-Navigation ────────────────────────────────────────────────────
+// ─── Init + SPA navigation ────────────────────────────────────────────────────
 
 function init() {
   if (document.body) createButton();
@@ -353,7 +377,7 @@ function updateVisibility() {
   btnEl.style.pointerEvents = onWatch ? 'none' : '';
 }
 
-// YouTube ist eine SPA – Button nach Navigation neu anhängen + Sichtbarkeit prüfen
+// YouTube is a SPA – re-attach button after navigation and update visibility
 addEventListener('yt-navigate-finish', () => {
   if (!document.body.contains(btnEl)) btnEl = null;
   init();
