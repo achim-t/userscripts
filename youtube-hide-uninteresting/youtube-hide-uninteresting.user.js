@@ -1,9 +1,12 @@
 // ==UserScript==
 // @name           YT: Dismiss all - not interested
 // @description    Floating button: mark all visible videos as "Not interested". Shift+Click for the whole page.
-// @version        1.0.0
+// @version        1.0.1
 //
 // @match          https://www.youtube.com/*
+//
+// @downloadURL    https://github.com/achim-t/userscripts/raw/refs/heads/main/youtube-hide-uninteresting/youtube-hide-uninteresting.user.js
+// @updateURL      https://github.com/achim-t/userscripts/raw/refs/heads/main/youtube-hide-uninteresting/youtube-hide-uninteresting.user.js
 //
 // @noframes
 // @grant          none
