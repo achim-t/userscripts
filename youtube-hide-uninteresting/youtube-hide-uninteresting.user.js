@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           YT: Dismiss all - not interested
 // @description    Floating button: mark all visible videos as "Not interested". Shift+Click for the whole page.
-// @version        1.0.1
+// @version        1.0.2
 //
 // @match          https://www.youtube.com/*
 //
@@ -127,6 +127,25 @@ function isNotInterestedItem(el) {
 
 let _sheet; // shared CSSStyleSheet for the opacity trick
 
+/** Video IDs that have been successfully dismissed this session. */
+const dismissedIds = new Set();
+
+function getVideoId(entry) {
+  const a = entry.querySelector('a[href*="v="]');
+  if (a) {
+    try {
+      return new URL(a.href).searchParams.get('v') || null;
+    } catch (_) {}
+  }
+  return getProp(entry, 'data.videoId') || null;
+}
+
+function isAlreadyDismissed(entry) {
+  if (entry.hasAttribute('data-ni-done')) return true;
+  const id = getVideoId(entry);
+  return id ? dismissedIds.has(id) : false;
+}
+
 const closeMenu = () =>
   document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
 
@@ -139,7 +158,7 @@ function ensureSheet() {
 }
 
 async function dismissEntry(entry) {
-  if (entry.hasAttribute('data-ni-done')) return false;
+  if (isAlreadyDismissed(entry)) return false;
 
   const menuBtn = $(MENU_BTN, entry);
   if (!menuBtn) return false;
@@ -181,6 +200,8 @@ async function dismissEntry(entry) {
         await delay(CONFIG.DELAY_CLICK);
         closeMenu();
         entry.dataset.niDone = '1';
+        const vid = getVideoId(entry);
+        if (vid) dismissedIds.add(vid);
         return true;
       }
     }
@@ -206,7 +227,7 @@ async function dismissAll(viewportOnly) {
   running = true;
 
   const entries = $$(ENTRY)
-    .filter(e => !e.hasAttribute('data-ni-done'))
+    .filter(e => !isAlreadyDismissed(e))
     .filter(e => !viewportOnly || isInViewport(e));
   let dismissed = 0;
   let failed = 0;
