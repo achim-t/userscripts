@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name           YT: Dismiss all - not interested
 // @description    Floating button: mark all visible videos as "Not interested". Shift+Click for the whole page.
-// @version        1.0.2
+// @version        1.0.3
 //
 // @match          https://www.youtube.com/*
 //
@@ -141,9 +141,12 @@ function getVideoId(entry) {
 }
 
 function isAlreadyDismissed(entry) {
-  if (entry.hasAttribute('data-ni-done')) return true;
   const id = getVideoId(entry);
-  return id ? dismissedIds.has(id) : false;
+  // When a video ID is available it is the authoritative source.
+  // data-ni-done alone is not trusted because YouTube recycles DOM nodes on
+  // scroll, causing stale attributes to appear on unrelated videos.
+  if (id) return dismissedIds.has(id);
+  return entry.hasAttribute('data-ni-done');
 }
 
 const closeMenu = () =>
